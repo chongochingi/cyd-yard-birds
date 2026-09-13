@@ -93,8 +93,13 @@ void setup() {
                                BirdNet::serverHost().c_str(), 40);
     WiFiManagerParameter pPort("port", "BirdNET-Go port",
                                String(BirdNet::serverPort()).c_str(), 6);
+    WiFiManagerParameter pUser("user", "Basic auth user (leave blank if none)",
+                               BirdNet::authUser().c_str(), 32);
+    WiFiManagerParameter pPass("pass", "Basic auth password", "", 64);
     wm.addParameter(&pHost);
     wm.addParameter(&pPort);
+    wm.addParameter(&pUser);
+    wm.addParameter(&pPass);
 
     UI::splash("WiFi setup", "join CYD-Birds-Setup");
     if (!wm.startConfigPortal("CYD-Birds-Setup")) {
@@ -102,8 +107,9 @@ void setup() {
       delay(8000);
       ESP.restart();
     }
-    // portal closed with values saved — persist the server address
+    // portal closed with values saved — persist server + credentials
     BirdNet::setServer(pHost.getValue(), (uint16_t)atoi(pPort.getValue()));
+    BirdNet::setAuth(pUser.getValue(), pPass.getValue());
   }
 
   Serial.printf("[wifi] ip=%s server=%s:%u\n",

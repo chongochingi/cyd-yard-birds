@@ -17,6 +17,10 @@ static bool       s_streamUp = false;
 static String   s_host = BIRDNET_DEFAULT_HOST;
 static uint16_t s_port = BIRDNET_DEFAULT_PORT;
 
+// Optional HTTP Basic Auth (BirdNET-Go's security.basicauth). Empty = disabled.
+static String s_user;
+static String s_pass;
+
 static const char *NVS_NS = "bnet";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +73,51 @@ String apiBase() {
   return String("http://") + s_host + ":" + String(s_port) + "/api/v2";
 }
 
+// --- Basic Auth -------------------------------------------------------------
+String authUser()    { return s_user; }
+bool   authEnabled() { return s_user.length() > 0; }
+
+// Minimal base64 for the "user:pass" credential (no dynamic allocation beyond
+// the output String).
+static String base64Encode(const String &in) {
+  static const char *tbl =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  String out;
+  out.reserve(((in.length() + 2) / 3) * 4);
+  int i = 0;
+  const int len = in.length();
+  while (i < len) {
+    uint32_t n = (uint8_t)in[i++] << 16;
+    const int remaining = len - i;          // bytes left AFTER the first
+    if (remaining >= 1) n |= (uint8_t)in[i++] << 8;
+    if (remaining >= 2) n |= (uint8_t)in[i++];
+    out += tbl[(n >> 18) & 63];
+    out += tbl[(n >> 12) & 63];
+    out += (remaining >= 1) ? tbl[(n >> 6) & 63] : '=';
+    out += (remaining >= 2) ? tbl[n & 63]        : '=';
+  }
+  return out;
+}
+
+// "Authorization: Basic ..." or "" when credentials are not configured.
+static String authHeader() {
+  if (!authEnabled()) return String();
+  return String("Authorization: Basic ") + base64Encode(s_user + ":" + s_pass) + "\r\n";
+}
+
+void setAuth(const String &user, const String &password) {
+  s_user = user;
+  s_pass = password;
+  Preferences p;
+  if (p.begin(NVS_NS, false)) {
+    p.putString("user", s_user);
+    p.putString("pass", s_pass);
+    p.end();
+  }
+  Serial.printf("[cfg] auth %s (user '%s')\n",
+                authEnabled() ? "enabled" : "disabled", s_user.c_str());
+}
+
 // ---------------------------------------------------------------------------
 // lifecycle
 // ---------------------------------------------------------------------------
@@ -87,9 +136,13 @@ void begin() {
   if (p.begin(NVS_NS, false)) {
     s_host = p.getString("host", BIRDNET_DEFAULT_HOST);
     s_port = p.getUShort("port", BIRDNET_DEFAULT_PORT);
+    s_user = p.getString("user", "");
+    s_pass = p.getString("pass", "");
     p.end();
   }
-  Serial.printf("[cfg] server = %s:%u\n", s_host.c_str(), (unsigned)s_port);
+  Serial.printf("[cfg] server = %s:%u, auth %s\n",
+                s_host.c_str(), (unsigned)s_port,
+                authEnabled() ? "on" : "off");
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +158,7 @@ int fetchDailySpecies(Species *out, int maxCount) {
   HTTPClient http;
   String url = apiBase() + "/analytics/species/daily";
   http.begin(url);
+  if (authEnabled()) http.setAuthorization(s_user.c_str(), s_pass.c_str());
   http.setTimeout(8000);
   int code = http.GET();
   if (code != 200) {
@@ -166,6 +220,7 @@ String ensureImage(const String &scientificName) {
   String url = apiBase() + "/media/image/" + urlEncode(scientificName);
   HTTPClient http;
   http.begin(url);
+  if (authEnabled()) http.setAuthorization(s_user.c_str(), s_pass.c_str());
   http.setTimeout(8000);
   int code = http.GET();
   if (code != 200) {
@@ -222,6 +277,7 @@ bool streamOpen() {
   }
   String req = String("GET /api/v2/detections/stream HTTP/1.1\r\n") +
                "Host: " + s_host + ":" + String(s_port) + "\r\n" +
+               authHeader() +                    // empty string when auth is off
                "Accept: text/event-stream\r\n" +
                "Cache-Control: no-cache\r\n" +
                "Connection: keep-alive\r\n\r\n";

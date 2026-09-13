@@ -28,6 +28,12 @@ namespace BirdNet {
   uint16_t serverPort();
   String apiBase();                                    // exposed for logging
 
+  // Optional HTTP Basic Auth — matches BirdNET-Go's security.basicauth block.
+  // Empty username means no Authorization header is sent.
+  void   setAuth(const String &user, const String &password);
+  String authUser();
+  bool   authEnabled();
+
   // Today's species, already sorted by count descending by the server.
   int fetchDailySpecies(Species *out, int maxCount);
 

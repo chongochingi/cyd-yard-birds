@@ -71,7 +71,9 @@ On first boot the display opens a WiFi captive portal:
 3. Enter your **WiFi network and password**.
 4. Enter your **BirdNET-Go host** (an IP address like `192.168.1.50` or a
    hostname) and **port** (default `8085`).
-5. Save. The display connects and starts showing birds.
+5. If your BirdNET-Go has `security.basicauth` enabled, enter the **basic auth
+   user and password**. Otherwise leave both blank.
+6. Save. The display connects and starts showing birds.
 
 Both the WiFi credentials and the server address are stored in the ESP32's NVS
 flash. **This is a one-time step** — the portal will not appear again on a normal
@@ -137,9 +139,11 @@ Defaults live in `src/config.h` and are overridden at runtime by the setup porta
 | `HERO_DEDUPE_MS` | `45000` | Suppress repeats of the same species |
 | `LIST_REFRESH_MS` | `300000` | List refresh interval |
 
-There is no API key support — the project assumes BirdNET-Go is on a trusted
-LAN with authentication disabled. If your instance requires auth, the two
-`HTTPClient` call sites in `src/birdnet.cpp` need a header added.
+There is no API key support, because BirdNET-Go doesn't use API keys. If your
+instance has `security.basicauth` enabled, enter the username and password in the
+setup portal and they are sent as an HTTP Basic `Authorization` header on every
+request (list, images, and the event stream). Leave the username blank to send no
+header at all.
 
 ## Credits and licensing
 
