@@ -144,8 +144,17 @@ void setup() {
                 WiFi.localIP().toString().c_str(),
                 BirdNet::serverHost().c_str(), (unsigned)BirdNet::serverPort());
 
-  UI::splash("Loading", "today's birds");
-  refreshList();
+  // After a portal save the first request can race the WiFi reconnect, so give
+  // it a few tries before declaring there is nothing to show. Without this the
+  // screen reads "no detections today" for up to a full refresh interval.
+  const int attempts = needPortal ? 6 : 1;
+  for (int i = 0; i < attempts; i++) {
+    UI::splash("Loading", "today's birds");
+    gCount       = BirdNet::fetchDailySpecies(gRows, LIST_ROWS);
+    gLastRefresh = millis();
+    if (gCount > 0) break;
+    delay(2500);
+  }
   showList();
 }
 
