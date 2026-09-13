@@ -44,6 +44,25 @@ static Species resolveSpecies(const String &sci, const String &common) {
   return s;
 }
 
+// --- setup portal state -----------------------------------------------------
+// The parameters must stay alive for the whole portal session, and the save
+// callback needs to reach them, so they are kept at file scope.
+static WiFiManagerParameter *g_pHost = nullptr;
+static WiFiManagerParameter *g_pPort = nullptr;
+static WiFiManagerParameter *g_pUser = nullptr;
+static WiFiManagerParameter *g_pPass = nullptr;
+
+// Fired the moment the user taps Save, before the portal decides whether to
+// close. This is what makes a server-only change stick even if the portal then
+// sits waiting on a WiFi reconnect.
+static void onPortalSave() {
+  if (g_pHost && g_pPort)
+    BirdNet::setServer(g_pHost->getValue(), (uint16_t)atoi(g_pPort->getValue()));
+  if (g_pUser && g_pPass)
+    BirdNet::setAuth(g_pUser->getValue(), g_pPass->getValue());
+  Serial.println("[cfg] portal save — server/credentials persisted");
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -113,6 +132,8 @@ void setup() {
 
   // --- 2. Setup portal: WiFi network + BirdNET-Go address + optional auth ------
   if (needPortal) {
+    const bool wifiWasOk = (WiFi.status() == WL_CONNECTED);
+
     WiFiManager wm;
     wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
     wm.setDebugOutput(false);
@@ -124,20 +145,39 @@ void setup() {
     WiFiManagerParameter pUser("user", "Basic auth user (leave blank if none)",
                                BirdNet::authUser().c_str(), 32);
     WiFiManagerParameter pPass("pass", "Basic auth password", "", 64);
+    g_pHost = &pHost; g_pPort = &pPort; g_pUser = &pUser; g_pPass = &pPass;
+
     wm.addParameter(&pHost);
     wm.addParameter(&pPort);
     wm.addParameter(&pUser);
     wm.addParameter(&pPass);
 
+    // Persist as soon as the user taps Save, rather than relying on the portal
+    // returning — startConfigPortal() only returns once WiFi connects, which
+    // never happens if WiFi was already fine and the user only changed the
+    // server address.
+    wm.setSaveParamsCallback(onPortalSave);
+
+    // If WiFi already works, there is nothing to wait for: close the portal as
+    // soon as the form is saved instead of blocking on a redundant reconnect.
+    // When WiFi itself needs setting up we keep the default behaviour so the
+    // connection can be verified.
+    if (wifiWasOk) wm.setBreakAfterConfig(true);
+
     UI::splash(title, "join CYD-Birds-Setup");
     if (!wm.startConfigPortal("CYD-Birds-Setup")) {
-      UI::message("Setup failed", "restarting...", COL_ACCENT);
-      delay(8000);
-      ESP.restart();
+      // Timed out. The save callback may still have persisted useful values, so
+      // only restart if we genuinely have nothing.
+      if (!BirdNet::serverConfigured() && !wifiWasOk) {
+        UI::message("Setup failed", "restarting...", COL_ACCENT);
+        delay(8000);
+        ESP.restart();
+      }
     }
-    // portal closed with values saved — persist server + credentials
+    // Belt and braces: if the portal did return normally, persist again.
     BirdNet::setServer(pHost.getValue(), (uint16_t)atoi(pPort.getValue()));
     BirdNet::setAuth(pUser.getValue(), pPass.getValue());
+    g_pHost = g_pPort = g_pUser = g_pPass = nullptr;
   }
 
   Serial.printf("[wifi] ip=%s server=%s:%u\n",
