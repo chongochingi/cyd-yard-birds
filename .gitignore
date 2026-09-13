@@ -1,0 +1,13 @@
+# PlatformIO build output
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# local secrets, if anyone adds a hardcoded config
+secrets.h
