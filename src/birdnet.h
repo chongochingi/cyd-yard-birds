@@ -34,6 +34,11 @@ namespace BirdNet {
   String authUser();
   bool   authEnabled();
 
+  // True once a server address has been saved. Used to distinguish "never set
+  // up" (open the portal) from "configured but currently unreachable" (retry,
+  // and only fall back to the portal after a grace period).
+  bool   serverConfigured();
+
   // Today's species, already sorted by count descending by the server.
   int fetchDailySpecies(Species *out, int maxCount);
 

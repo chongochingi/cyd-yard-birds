@@ -35,6 +35,8 @@
 // ---- Timings --------------------------------------------------------------
 #define WIFI_PORTAL_TIMEOUT_S  180           // captive portal auto-close
 #define WIFI_CONNECT_MS        15000UL       // try saved credentials this long first
+#define SERVER_GRACE_MS        30000UL       // retry a configured-but-unreachable server
+                                             // this long before falling back to setup
 #define LIST_REFRESH_MS        (5UL * 60UL * 1000UL)   // re-pull counts every 5 min
 #define RECONNECT_DELAY_MS     5000UL
 #define STREAM_POLL_MS         10000UL       // SSE wait per loop

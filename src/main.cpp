@@ -64,26 +64,54 @@ void setup() {
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_CONNECT_MS) delay(250);
 
-  bool needPortal = (WiFi.status() != WL_CONNECTED);
+  bool needPortal   = false;
+  const char *title = "Setup";
 
-  if (!needPortal) {
+  if (WiFi.status() != WL_CONNECTED) {
+    // WiFi itself is the problem.
+    needPortal = true;
+    title      = "WiFi setup";
+  } else {
     Serial.printf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
-
-    // --- 2. Can we actually reach BirdNET-Go? If not, the address is wrong. ---
     UI::splash("Loading", "today's birds");
-    if (BirdNet::fetchDailySpecies(gRows, LIST_ROWS) == 0) {
-      Serial.printf("[cfg] %s:%u unreachable, opening setup\n",
-                    BirdNet::serverHost().c_str(), (unsigned)BirdNet::serverPort());
-      UI::message("Server unreachable", BirdNet::serverHost().c_str(), COL_ACCENT);
-      delay(2500);
-      needPortal = true;
-    } else {
+
+    bool reachable = (BirdNet::fetchDailySpecies(gRows, LIST_ROWS) > 0);
+
+    if (reachable) {
       gLastRefresh = millis();
       showList();
+    } else if (!BirdNet::serverConfigured()) {
+      // Never been set up — this is genuine first-time configuration, so the
+      // screen should say "server", not "WiFi".
+      Serial.println("[cfg] no server configured yet — first-time setup");
+      needPortal = true;
+      title      = "Server setup";
+    } else {
+      // Configured but temporarily unreachable. Retry quietly rather than
+      // throwing a setup screen at a device that is already configured.
+      Serial.printf("[cfg] %s:%u unreachable — retrying %lus before setup\n",
+                    BirdNet::serverHost().c_str(), (unsigned)BirdNet::serverPort(),
+                    SERVER_GRACE_MS / 1000);
+      unsigned long graceStart = millis();
+      while (millis() - graceStart < SERVER_GRACE_MS) {
+        UI::message("Can't reach server", BirdNet::serverHost().c_str(), COL_ACCENT);
+        delay(5000);
+        if (BirdNet::fetchDailySpecies(gRows, LIST_ROWS) > 0) {
+          reachable    = true;
+          gLastRefresh = millis();
+          showList();
+          break;
+        }
+      }
+      if (!reachable) {
+        Serial.println("[cfg] still unreachable — offering setup to correct it");
+        needPortal = true;
+        title      = "Server setup";
+      }
     }
   }
 
-  // --- 3. Setup portal: WiFi network + BirdNET-Go address ---------------------
+  // --- 2. Setup portal: WiFi network + BirdNET-Go address + optional auth ------
   if (needPortal) {
     WiFiManager wm;
     wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
@@ -101,7 +129,7 @@ void setup() {
     wm.addParameter(&pUser);
     wm.addParameter(&pPass);
 
-    UI::splash("WiFi setup", "join CYD-Birds-Setup");
+    UI::splash(title, "join CYD-Birds-Setup");
     if (!wm.startConfigPortal("CYD-Birds-Setup")) {
       UI::message("Setup failed", "restarting...", COL_ACCENT);
       delay(8000);

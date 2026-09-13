@@ -21,6 +21,10 @@ static uint16_t s_port = BIRDNET_DEFAULT_PORT;
 static String s_user;
 static String s_pass;
 
+// Set once a host has been persisted, so we can tell "never set up" from
+// "set up but currently unreachable".
+static bool s_configured = false;
+
 static const char *NVS_NS = "bnet";
 
 // ---------------------------------------------------------------------------
@@ -58,8 +62,8 @@ String serverHost() { return s_host; }
 uint16_t serverPort() { return s_port; }
 
 void setServer(const String &host, uint16_t port) {
-  if (host.length()) s_host = host;
-  if (port)          s_port = port;
+  if (host.length()) { s_host = host; s_configured = true; }
+  if (port)            s_port = port;
   Preferences p;
   if (p.begin(NVS_NS, false)) {
     p.putString("host", s_host);
@@ -68,6 +72,8 @@ void setServer(const String &host, uint16_t port) {
   }
   Serial.printf("[cfg] server = %s:%u\n", s_host.c_str(), (unsigned)s_port);
 }
+
+bool serverConfigured() { return s_configured; }
 
 String apiBase() {
   return String("http://") + s_host + ":" + String(s_port) + "/api/v2";
@@ -134,15 +140,17 @@ void begin() {
   // (read-write: opens read-only would fail with NOT_FOUND before first save)
   Preferences p;
   if (p.begin(NVS_NS, false)) {
+    s_configured = p.isKey("host");
     s_host = p.getString("host", BIRDNET_DEFAULT_HOST);
     s_port = p.getUShort("port", BIRDNET_DEFAULT_PORT);
     s_user = p.getString("user", "");
     s_pass = p.getString("pass", "");
     p.end();
   }
-  Serial.printf("[cfg] server = %s:%u, auth %s\n",
+  Serial.printf("[cfg] server = %s:%u, auth %s, configured %s\n",
                 s_host.c_str(), (unsigned)s_port,
-                authEnabled() ? "on" : "off");
+                authEnabled() ? "on" : "off",
+                s_configured ? "yes" : "no");
 }
 
 // ---------------------------------------------------------------------------

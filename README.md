@@ -76,9 +76,22 @@ On first boot the display opens a WiFi captive portal:
 6. Save. The display connects and starts showing birds.
 
 Both the WiFi credentials and the server address are stored in the ESP32's NVS
-flash. **This is a one-time step** — the portal will not appear again on a normal
-boot. It only reopens if WiFi fails, or if BirdNET-Go can't be reached (which is
-how you correct a wrong address).
+flash. **This is a one-time step.** On a normal boot the portal does not appear at
+all — the device connects silently and goes straight to the list.
+
+The portal only reopens in three cases, and the screen says which:
+
+| Screen | Meaning |
+|---|---|
+| `WiFi setup` | WiFi credentials are missing or wrong |
+| `Server setup` | No server address has been saved yet (first-time setup) |
+| `Server setup` | A saved server stayed unreachable for 30 seconds |
+
+That last row is deliberately generous: if BirdNET-Go is briefly down or
+restarting, the device retries quietly and shows `Can't reach server` on screen
+rather than throwing a setup screen at an already-configured device. It only
+offers setup after the grace period, which is also the recovery path if you
+mistype the address.
 
 To start over from scratch, erase the flash first:
 
