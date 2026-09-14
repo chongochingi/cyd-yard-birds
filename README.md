@@ -32,31 +32,94 @@ specific to this board, and the layout is tuned to a 240×320 portrait screen.
 └────────────────────────┘
 ```
 
-## Requirements
+## Quick start
 
-- **An ESP32-2432S028 "Cheap Yellow Display"** — the 2.8" board specifically.
-- A **USB data cable**. Plenty of USB cables are charge-only; if the board never
-  appears as a serial port, try another cable before debugging anything else.
-- **BirdNET-Go** running and reachable on your LAN, listening on a port your WiFi
-  network can reach (default `8085`).
-- No SD card is needed.
+### What you need first
 
-## Building and flashing
+1. **A working BirdNET-Go instance on your network.** This project is only a
+   display — it has no microphone and does no detection itself. You need
+   [BirdNET-Go](https://github.com/tphakala/birdnet-go) already running,
+   listening to an audio source (a microphone or an RTSP stream), and reachable
+   over WiFi. Set that up first; nothing here works without it.
+2. **A 2.8" CYD** — the ESP32-2432S028 board specifically.
+3. **A USB data cable.** Charge-only cables are the single most common
+   time-waster. If the board never shows up as a serial port, try a different
+   cable before debugging anything else.
+4. **PlatformIO** — either the VS Code
+   [PlatformIO IDE extension](https://platformio.org/install/ide?install=vscode)
+   or the CLI:
 
-PlatformIO:
+   ```bash
+   pip install platformio        # or: pipx install platformio
+   ```
+
+No SD card is required.
+
+### Steps
+
+**1. Get the code**
+
+```bash
+git clone https://github.com/chongochingi/cyd-yard-birds
+cd cyd-yard-birds
+```
+
+**2. Flash it**
 
 ```bash
 pio run -e cyd -t upload
 ```
 
-Or build and flash separately (useful when the board is on a different machine
-than your toolchain):
+If the board isn't detected, it's usually the serial driver: Windows generally
+needs a **CH340** driver, and on Linux your user must be in the **`dialout`**
+group.
+
+**3. First boot — things appear in this order**
+
+| What you see | What to do |
+|---|---|
+| Screen flashes red → green → blue → white | Nothing — it's confirming the panel and backlight work |
+| **"Touch calibration"** with a red crosshair | Tap the crosshair firmly, then the second one. Tap accuracy matters. |
+| **"WiFi setup"**, and a `CYD-Birds-Setup` network appears | On your phone, join `CYD-Birds-Setup`, then open `http://192.168.4.1` |
+| A setup form | Enter your WiFi, then the **BirdNET-Go host** and **port** (`8085`). Leave the auth fields blank unless your instance has `security.basicauth` enabled. |
+| Tap Save | It connects and the bird list appears |
+
+Calibration runs **before** WiFi setup, which catches people out — it happens on
+first boot only and is then stored in flash.
+
+**4. Done.** From then on it boots straight to the list — no portal, no
+calibration.
+
+For the reference detail — which setup screen appears when, reopening the portal,
+and recovering from a bad calibration — see [First-time setup](#first-time-setup).
+
+## Building and flashing
+
+PlatformIO builds and uploads in one step:
 
 ```bash
-pio run -e cyd                                  # produces .pio/build/cyd/firmware.bin
-esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 \
+pio run -e cyd -t upload
+```
+
+To build without uploading — for instance when the board is plugged into a
+different machine than your toolchain — build here:
+
+```bash
+pio run -e cyd                # produces .pio/build/cyd/firmware.bin
+```
+
+then write the four binaries there:
+
+```bash
+esptool --chip esp32 --port /dev/ttyUSB0 --baud 921600 \
   write-flash -z --flash-mode dio --flash-freq 40m --flash-size 4MB \
   0x1000 bootloader.bin 0x8000 partitions.bin 0xe000 boot_app0.bin 0x10000 firmware.bin
+```
+
+Before writing anything, confirm the board is talking — this changes nothing:
+
+```bash
+esptool --chip esp32 --port /dev/ttyUSB0 flash-id
 ```
 
 `boot_app0.bin` lives in your PlatformIO framework package, not the build output:
@@ -65,22 +128,23 @@ esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 \
 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin
 ```
 
+### esptool version note
+
+esptool **v5** renamed its subcommands and flags to use hyphens (`write-flash`,
+`--flash-mode`). PlatformIO still bundles **v4**, which uses underscores
+(`write_flash`, `--flash_mode`).
+
+The commands above use the v5 spelling, which also works on v4-era scripts in
+reverse — v5 still accepts the underscored forms with a deprecation warning. If
+you copy a command from elsewhere and it fails with *unrecognized arguments*,
+that hyphen/underscore difference is almost always why.
+
 ## First-time setup
 
-On first boot the display opens a WiFi captive portal:
-
-1. On your phone, join the WiFi network **`CYD-Birds-Setup`**.
-2. A setup page should open automatically. If it doesn't, browse to
-   **`http://192.168.4.1`**.
-3. Enter your **WiFi network and password**.
-4. Enter your **BirdNET-Go host** (an IP address like `192.168.1.50` or a
-   hostname) and **port** (default `8085`).
-5. If your BirdNET-Go has `security.basicauth` enabled, enter the **basic auth
-   user and password**. Otherwise leave both blank.
-6. Save. The display connects and starts showing birds.
-
-Both the WiFi credentials and the server address are stored in the ESP32's NVS
-flash. **This is a one-time step.** On a normal boot the portal does not appear at
+The portal collects everything in one pass — WiFi, the BirdNET-Go address, and
+optional credentials (see [Quick start](#quick-start) for the walkthrough). Both
+the WiFi credentials and the server address are stored in the ESP32's NVS flash,
+so **this is a one-time step**. On a normal boot the portal does not appear at
 all — the device connects silently and goes straight to the list.
 
 The portal only reopens in three cases, and the screen says which:
@@ -126,7 +190,7 @@ separate NVS namespaces.
 To start over from scratch, erase the flash first:
 
 ```bash
-esptool.py --chip esp32 --port /dev/ttyUSB0 erase-flash
+esptool --chip esp32 --port /dev/ttyUSB0 erase-flash
 ```
 
 ## How it works
