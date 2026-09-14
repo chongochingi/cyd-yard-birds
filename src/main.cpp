@@ -4,6 +4,7 @@
 #include "config.h"
 #include "birdnet.h"
 #include "ui.h"
+#include "touch.h"
 
 // ---------------------------------------------------------------------------
 // Yard-bird display driven by BirdNET-Go.
@@ -63,14 +64,75 @@ static void onPortalSave() {
   Serial.println("[cfg] portal save — server/credentials persisted");
 }
 
+// Opens the captive portal, persists whatever was entered, and returns.
+// Callable from setup() or later from the header button.
+static void runSetupPortal(const char *title) {
+  const bool wifiWasOk = (WiFi.status() == WL_CONNECTED);
+
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
+  wm.setDebugOutput(false);
+
+  WiFiManagerParameter pHost("host", "BirdNET-Go host (IP or hostname)",
+                             BirdNet::serverHost().c_str(), 40);
+  WiFiManagerParameter pPort("port", "BirdNET-Go port",
+                             String(BirdNet::serverPort()).c_str(), 6);
+  WiFiManagerParameter pUser("user", "Basic auth user (leave blank if none)",
+                             BirdNet::authUser().c_str(), 32);
+  WiFiManagerParameter pPass("pass", "Basic auth password", "", 64);
+  g_pHost = &pHost; g_pPort = &pPort; g_pUser = &pUser; g_pPass = &pPass;
+
+  wm.addParameter(&pHost);
+  wm.addParameter(&pPort);
+  wm.addParameter(&pUser);
+  wm.addParameter(&pPass);
+
+  // Persist on Save rather than relying on the portal returning — the portal
+  // only returns once WiFi connects, which never happens when WiFi is already
+  // fine and only the server address changed.
+  wm.setSaveParamsCallback(onPortalSave);
+
+  // If WiFi already works there is nothing to wait for, so close on save.
+  // Otherwise keep the default so a new network can be verified.
+  if (wifiWasOk) wm.setBreakAfterConfig(true);
+
+  UI::splash(title, "join CYD-Birds-Setup");
+  bool ok = wm.startConfigPortal("CYD-Birds-Setup");
+  if (!ok) Serial.println("[cfg] portal closed without confirmation");
+
+  // Belt and braces — persist again in case the portal did return normally.
+  if (pHost.getValue() && strlen(pHost.getValue()))
+    BirdNet::setServer(pHost.getValue(), (uint16_t)atoi(pPort.getValue()));
+  BirdNet::setAuth(pUser.getValue(), pPass.getValue());
+  g_pHost = g_pPort = g_pUser = g_pPass = nullptr;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println("\n=== CYD Yard Birds ===");
 
   UI::begin();
-  UI::panelTest();
+  UI::panelTest();                    // R/G/B/W flash — proves panel + backlight are alive
   UI::splash("Yard Birds", "starting up");
+
+  // Touch drives only the header SETUP button. First boot runs a two-point
+  // calibration and stores it in NVS; every later boot reuses it.
+  //
+  // A bad calibration makes the panel unusable and you cannot tap your way out
+  // of it, so allow forcing a redo: send 'c' on the serial console within 2s of
+  // boot. This is the only recovery path that does not depend on touch.
+  bool forceCal = false;
+  unsigned long calWait = millis();
+  while (millis() - calWait < 2000) {
+    if (Serial.available()) {
+      int ch = Serial.read();
+      if (ch == 'c' || ch == 'C') { forceCal = true; break; }
+    }
+    delay(20);
+  }
+  if (forceCal) Serial.println("[touch] recalibration triggered from serial");
+  touchInit(forceCal);
 
   BirdNet::begin();                    // mounts LittleFS, loads saved server
 
@@ -132,52 +194,7 @@ void setup() {
 
   // --- 2. Setup portal: WiFi network + BirdNET-Go address + optional auth ------
   if (needPortal) {
-    const bool wifiWasOk = (WiFi.status() == WL_CONNECTED);
-
-    WiFiManager wm;
-    wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
-    wm.setDebugOutput(false);
-
-    WiFiManagerParameter pHost("host", "BirdNET-Go host (IP or hostname)",
-                               BirdNet::serverHost().c_str(), 40);
-    WiFiManagerParameter pPort("port", "BirdNET-Go port",
-                               String(BirdNet::serverPort()).c_str(), 6);
-    WiFiManagerParameter pUser("user", "Basic auth user (leave blank if none)",
-                               BirdNet::authUser().c_str(), 32);
-    WiFiManagerParameter pPass("pass", "Basic auth password", "", 64);
-    g_pHost = &pHost; g_pPort = &pPort; g_pUser = &pUser; g_pPass = &pPass;
-
-    wm.addParameter(&pHost);
-    wm.addParameter(&pPort);
-    wm.addParameter(&pUser);
-    wm.addParameter(&pPass);
-
-    // Persist as soon as the user taps Save, rather than relying on the portal
-    // returning — startConfigPortal() only returns once WiFi connects, which
-    // never happens if WiFi was already fine and the user only changed the
-    // server address.
-    wm.setSaveParamsCallback(onPortalSave);
-
-    // If WiFi already works, there is nothing to wait for: close the portal as
-    // soon as the form is saved instead of blocking on a redundant reconnect.
-    // When WiFi itself needs setting up we keep the default behaviour so the
-    // connection can be verified.
-    if (wifiWasOk) wm.setBreakAfterConfig(true);
-
-    UI::splash(title, "join CYD-Birds-Setup");
-    if (!wm.startConfigPortal("CYD-Birds-Setup")) {
-      // Timed out. The save callback may still have persisted useful values, so
-      // only restart if we genuinely have nothing.
-      if (!BirdNet::serverConfigured() && !wifiWasOk) {
-        UI::message("Setup failed", "restarting...", COL_ACCENT);
-        delay(8000);
-        ESP.restart();
-      }
-    }
-    // Belt and braces: if the portal did return normally, persist again.
-    BirdNet::setServer(pHost.getValue(), (uint16_t)atoi(pPort.getValue()));
-    BirdNet::setAuth(pUser.getValue(), pPass.getValue());
-    g_pHost = g_pPort = g_pUser = g_pPass = nullptr;
+    runSetupPortal(title);
   }
 
   Serial.printf("[wifi] ip=%s server=%s:%u\n",
@@ -199,6 +216,22 @@ void setup() {
 }
 
 void loop() {
+  // --- header SETUP button: reopen the portal to change the server address ---
+  TouchEvent te = touchProcess();
+  if (te.type == TouchEvent::TAP && UI::setupButtonHit(te.x, te.y)) {
+    Serial.printf("[ui] SETUP tapped at (%d,%d)\n", te.x, te.y);
+    UI::drawList(gRows, gCount, "setup...");
+    runSetupPortal("Server setup");
+    // Whatever was entered is now in NVS; reconnect if WiFi changed.
+    if (WiFi.status() != WL_CONNECTED) {
+      WiFi.begin();
+      delay(2000);
+    }
+    refreshList();
+    showList();
+    return;
+  }
+
   if (!BirdNet::streamConnected()) {
     showList();                                  // status reads "linking"
     if (!BirdNet::streamOpen()) {

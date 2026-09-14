@@ -5,7 +5,8 @@
 #include <TJpg_Decoder.h>
 #include <LittleFS.h>
 
-static TFT_eSPI tft;
+// Shared with the touch driver (declared extern in ui.h).
+TFT_eSPI tft;
 
 // ---------------------------------------------------------------------------
 // TJpg_Decoder output callback.
@@ -88,17 +89,26 @@ void message(const char *line1, const char *line2, uint16_t colour) {
 void drawList(const Species *rows, int count, const char *status) {
   tft.fillScreen(COL_BG);
 
-  // header
+  // header: title, status, and the setup button
   tft.fillRect(0, 0, SCREEN_W, HEADER_H, COL_HEADER);
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(COL_TEXT, COL_HEADER);
   tft.drawString("Yard Birds", 4, 3, 2);
+
   if (status) {
     tft.setTextDatum(TR_DATUM);
     tft.setTextColor(COL_DIM, COL_HEADER);
-    tft.drawString(status, SCREEN_W - 4, 5, 1);
+    tft.drawString(status, BTN_X - 4, 5, 1);
     tft.setTextDatum(TL_DATUM);
   }
+
+  // Tap target: reopens the WiFiManager portal so the server address can be
+  // changed without erasing flash.
+  tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 3, COL_ACCENT);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_BLACK, COL_ACCENT);
+  tft.drawString("SETUP", BTN_X + BTN_W / 2, BTN_Y + BTN_H / 2, 1);
+  tft.setTextDatum(TL_DATUM);
 
   // column captions
   tft.setTextColor(COL_DIM, COL_BG);
@@ -181,6 +191,12 @@ void drawHero(const Species &s) {
   tft.setTextColor(COL_ACCENT, COL_HERO_BAND);
   tft.drawString(line, SCREEN_W / 2, by + 54, 2);
   tft.setTextDatum(TL_DATUM);
+}
+
+// Generous hit box — the resistive panel needs a firm, imprecise tap.
+bool setupButtonHit(int16_t x, int16_t y) {
+  return x >= BTN_X - 4 && x < BTN_X + BTN_W + 4 &&
+         y >= BTN_Y - 2 && y < BTN_Y + BTN_H + 4;
 }
 
 }  // namespace UI

@@ -1,10 +1,14 @@
 #pragma once
 #include <Arduino.h>
+#include <TFT_eSPI.h>
 #include "birdnet.h"
 
 // ---------------------------------------------------------------------------
 // Portrait 240x320 rendering: a text list, plus a full-screen hero on new IDs.
 // ---------------------------------------------------------------------------
+
+// The single panel instance, shared with the touch driver.
+extern TFT_eSPI tft;
 
 namespace UI {
 
@@ -19,5 +23,8 @@ namespace UI {
 
   void message(const char *line1, const char *line2, uint16_t colour);
   void splash(const char *line1, const char *line2 = nullptr);
+
+  // Geometry of the header "setup" button, for hit testing.
+  bool setupButtonHit(int16_t x, int16_t y);
 
 }  // namespace UI

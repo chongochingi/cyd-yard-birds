@@ -1,0 +1,391 @@
+// Written by Alun Morris and Claude Code
+#include "touch.h"
+#include "config.h"     // SCREEN_W/H, COL_BG, COL_TEXT
+#include "ui.h"         // extern TFT_eSPI tft
+#include <Preferences.h>
+
+// Two transport modes:
+//
+// 1. Bit-banged SPI (default, CYD). The CYD (ESP32-2432S028R) physically wires
+//    XPT2046 to pins 25/39/32/33/36, which are DIFFERENT from the ILI9341 HSPI
+//    pins (13/12/14/15) and the SD VSPI pins (18/19/23/5). ESP32 only has two
+//    user SPI peripherals, so bit-bang is the only clean solution that doesn't
+//    corrupt the TFT or SD buses.
+//
+// 2. Shared hardware SPI (-DTOUCH_USE_SHARED_SPI=1, e.g. ESP32-C3). The C3 has
+//    a single SPI peripheral, so TFT, SD and touch all share SCK/MOSI/MISO with
+//    separate CS lines. XPT2046 reads use SPI transactions at 2 MHz, so they
+//    interleave safely with TFT_eSPI and SD traffic. Only TOUCH_CS_PIN and
+//    TOUCH_IRQ_PIN apply in this mode.
+#ifndef TOUCH_SCLK
+#define TOUCH_SCLK    25
+#endif
+#ifndef TOUCH_MISO
+#define TOUCH_MISO    39   // input-only ADC pin — no pullup needed (XPT2046 drives it)
+#endif
+#ifndef TOUCH_MOSI
+#define TOUCH_MOSI    32
+#endif
+#ifndef TOUCH_CS_PIN
+#define TOUCH_CS_PIN  33
+#endif
+#ifndef TOUCH_IRQ_PIN
+#define TOUCH_IRQ_PIN 36   // input-only ADC pin — XPT2046 drives PENIRQ active-LOW
+#endif
+
+// Normalise the build flag to a 0/1 internal flag used throughout this file.
+#if defined(TOUCH_USE_SHARED_SPI) && TOUCH_USE_SHARED_SPI
+#define TOUCH_SHARED_SPI 1
+#include <SPI.h>
+#else
+#define TOUCH_SHARED_SPI 0
+#endif
+
+// XPT2046 channel commands: start=1, 12-bit, differential, power-down.
+// On CYD (ESP32-2432S028R) landscape the electrode wiring is transposed:
+//   0x90 (A=001, "Y electrode") tracks the display's LEFT-RIGHT axis → screen X
+//   0xD0 (A=101, "X electrode") tracks the display's TOP-BOTTOM axis → screen Y
+#define XPT_CMD_X  0x90   // reads display X (left→right)
+#define XPT_CMD_Y  0xD0   // reads display Y (top→bottom, may be inverted — cal handles it)
+
+// This driver was written for LANDSCAPE (tft.setRotation(1), 320x240). In
+// portrait (rotation 0, 240x320) the panel's physical axes are rotated 90°, so
+// the raw X/Y readings feed the opposite screen axes. Calibration handles
+// direction and inversion, but NOT a swap, so it must be stated here.
+// Verify empirically: every press logs raw and mapped coordinates.
+#ifndef TOUCH_SWAP_XY
+#define TOUCH_SWAP_XY 1
+#endif
+
+// Calibration: raw ADC → screen pixel mapping
+static int g_xmin = 200, g_xmax = 3900;
+static int g_ymin = 200, g_ymax = 3900;
+
+// ---- NVS persistence ---------------------------------------------------------
+
+static void loadCal() {
+    Preferences p;
+    // read-write: a read-only open fails with NOT_FOUND before the first save
+    p.begin("birdTch", false);
+    if (p.getBool("valid", false)) {
+        g_xmin = p.getInt("xmin", g_xmin);
+        g_xmax = p.getInt("xmax", g_xmax);
+        g_ymin = p.getInt("ymin", g_ymin);
+        g_ymax = p.getInt("ymax", g_ymax);
+    }
+    p.end();
+}
+
+static void saveCal() {
+    Preferences p;
+    p.begin("birdTch", false);
+    p.putInt("xmin", g_xmin); p.putInt("xmax", g_xmax);
+    p.putInt("ymin", g_ymin); p.putInt("ymax", g_ymax);
+    p.putBool("valid", true);
+    p.end();
+}
+
+#if TOUCH_SHARED_SPI
+
+// ---- Shared hardware SPI for XPT2046 ------------------------------------------
+// XPT2046 max SPI clock is ~2.5 MHz. Transactions let it coexist with the TFT
+// and SD on the same bus (each device asserts only its own CS).
+
+static uint16_t tp_read_channel(uint8_t cmd) {
+    SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(TOUCH_CS_PIN, LOW);
+    SPI.transfer(cmd);
+    uint16_t val = SPI.transfer16(0);
+    digitalWrite(TOUCH_CS_PIN, HIGH);
+    SPI.endTransaction();
+    return (val >> 3) & 0x0FFF;
+}
+
+#else
+
+// ---- Bit-bang SPI for XPT2046 ------------------------------------------------
+// SPI Mode 0: CPOL=0 CPHA=0 — data driven on falling edge, sampled on rising edge.
+
+static void tp_write_byte(uint8_t b) {
+    for (int i = 7; i >= 0; i--) {
+        digitalWrite(TOUCH_MOSI, (b >> i) & 1);
+        digitalWrite(TOUCH_SCLK, HIGH);
+        digitalWrite(TOUCH_SCLK, LOW);
+    }
+}
+
+// Send command, return 12-bit ADC result (16 clocks, result in bits [14:3]).
+static uint16_t tp_read_channel(uint8_t cmd) {
+    digitalWrite(TOUCH_CS_PIN, LOW);
+    tp_write_byte(cmd);
+    uint16_t val = 0;
+    for (int i = 15; i >= 0; i--) {
+        digitalWrite(TOUCH_SCLK, HIGH);
+        val |= (uint16_t)(digitalRead(TOUCH_MISO)) << i;
+        digitalWrite(TOUCH_SCLK, LOW);
+    }
+    digitalWrite(TOUCH_CS_PIN, HIGH);
+    return (val >> 3) & 0x0FFF;
+}
+
+#endif  // TOUCH_SHARED_SPI
+
+static bool tp_touched() {
+    return digitalRead(TOUCH_IRQ_PIN) == LOW;
+}
+
+// Average 4 samples for noise rejection.
+#if TOUCH_SHARED_SPI
+// Batched: one beginTransaction + two CS assertions for all 8 reads instead of
+// eight separate transactions. Keeps CS low across all four reads of the same
+// channel — the XPT2046 starts a new conversion on each new command byte with
+// CS held low, so this is legal and saves significant SPI overhead on the C3.
+static void tp_get_raw(int16_t &rx, int16_t &ry) {
+    long sx = 0, sy = 0;
+    SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(TOUCH_CS_PIN, LOW);
+    for (int i = 0; i < 4; i++) {
+        SPI.transfer(XPT_CMD_X);
+        sx += (SPI.transfer16(0) >> 3) & 0x0FFF;
+    }
+    digitalWrite(TOUCH_CS_PIN, HIGH);
+    digitalWrite(TOUCH_CS_PIN, LOW);
+    for (int i = 0; i < 4; i++) {
+        SPI.transfer(XPT_CMD_Y);
+        sy += (SPI.transfer16(0) >> 3) & 0x0FFF;
+    }
+    digitalWrite(TOUCH_CS_PIN, HIGH);
+    SPI.endTransaction();
+    rx = (int16_t)(sx / 4);
+    ry = (int16_t)(sy / 4);
+}
+#else
+static void tp_get_raw(int16_t &rx, int16_t &ry) {
+    long sx = 0, sy = 0;
+    for (int i = 0; i < 4; i++) {
+        sx += tp_read_channel(XPT_CMD_X);
+        sy += tp_read_channel(XPT_CMD_Y);
+    }
+    rx = (int16_t)(sx / 4);
+    ry = (int16_t)(sy / 4);
+}
+#endif
+
+// ---- Calibration -------------------------------------------------------------
+
+static void drawCrosshair(int x, int y) {
+    tft.drawLine(x - 12, y,      x + 12, y,      TFT_RED);
+    tft.drawLine(x,      y - 12, x,      y + 12, TFT_RED);
+    tft.drawCircle(x, y, 5, TFT_RED);
+}
+
+static void runCalibration() {
+    const int T1X = 20,  T1Y = 20;
+    const int T2X = SCREEN_W - 21, T2Y = SCREEN_H - 21;   // portrait: 219, 299
+
+    tft.fillScreen(COL_BG);
+    tft.setTextColor(COL_TEXT, COL_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("Touch calibration", SCREEN_W / 2, 60, 2);
+
+    while (tp_touched()) delay(5);
+    delay(200);
+
+    // Point 1: top-left
+    drawCrosshair(T1X, T1Y);
+    tft.drawString("Tap the crosshair", SCREEN_W / 2, SCREEN_H / 2, 2);
+    while (!tp_touched()) delay(5);
+    long sumX = 0, sumY = 0; int n = 0;
+    while (tp_touched()) {
+        int16_t rx, ry; tp_get_raw(rx, ry);
+        sumX += rx; sumY += ry; n++; delay(10);
+    }
+    if (n < 1) n = 1;
+    int rx1 = sumX / n, ry1 = sumY / n;
+    Serial.printf("[touch cal] P1 raw: %d, %d\n", rx1, ry1);
+
+    // Point 2: bottom-right
+    tft.fillScreen(COL_BG);
+    drawCrosshair(T2X, T2Y);
+    tft.drawString("Tap the crosshair", SCREEN_W / 2, SCREEN_H / 2, 2);
+    delay(300);
+    while (!tp_touched()) delay(5);
+    sumX = 0; sumY = 0; n = 0;
+    while (tp_touched()) {
+        int16_t rx, ry; tp_get_raw(rx, ry);
+        sumX += rx; sumY += ry; n++; delay(10);
+    }
+    if (n < 1) n = 1;
+    int rx2 = sumX / n, ry2 = sumY / n;
+    Serial.printf("[touch cal] P2 raw: %d, %d\n", rx2, ry2);
+
+    // Extrapolate to the full portrait range. The two taps were sampled
+    // diagonally, so which raw axis feeds screen X depends on TOUCH_SWAP_XY.
+#if TOUCH_SWAP_XY
+    long ax1 = ry1, ax2 = ry2;   // raw axis feeding screen X
+    long ay1 = rx1, ay2 = rx2;   // raw axis feeding screen Y
+#else
+    long ax1 = rx1, ax2 = rx2;
+    long ay1 = ry1, ay2 = ry2;
+#endif
+    long dAx = ax2 - ax1, dTx = T2X - T1X;
+    long dAy = ay2 - ay1, dTy = T2Y - T1Y;
+    if (dAx == 0) dAx = 1;
+    if (dAy == 0) dAy = 1;
+    g_xmin = (int)(ax1 - dAx * T1X / dTx);
+    g_xmax = (int)(ax2 + dAx * (SCREEN_W - 1 - T2X) / dTx);
+    g_ymin = (int)(ay1 - dAy * T1Y / dTy);
+    g_ymax = (int)(ay2 + dAy * (SCREEN_H - 1 - T2Y) / dTy);
+    Serial.printf("[touch cal] xmin=%d xmax=%d ymin=%d ymax=%d\n",
+                  g_xmin, g_xmax, g_ymin, g_ymax);
+    saveCal();
+
+    tft.fillScreen(COL_BG);
+    tft.setTextColor(TFT_GREEN, COL_BG);
+    tft.drawString("Calibration saved!", SCREEN_W / 2, SCREEN_H / 2, 2);
+    tft.setTextDatum(TL_DATUM);
+    delay(1200);
+}
+
+// ---- Public init -------------------------------------------------------------
+
+void touchInit(bool forceRecal) {
+    loadCal();
+
+#if TOUCH_SHARED_SPI
+    // Bus pins already initialised by SPI.begin() in wikiDbInit().
+    pinMode(TOUCH_CS_PIN,  OUTPUT); digitalWrite(TOUCH_CS_PIN,  HIGH);
+    pinMode(TOUCH_IRQ_PIN, INPUT_PULLUP);
+
+    // XPT2046 PENIRQ is only enabled after the first conversion with PD=00.
+    // Send a dummy read to put it into power-down mode so PENIRQ works.
+    delay(10);
+    tp_read_channel(XPT_CMD_X);
+    delay(1);
+    Serial.printf("[touch] shared-SPI init done, IRQ after wake=%d\n", digitalRead(TOUCH_IRQ_PIN));
+#else
+    pinMode(TOUCH_SCLK,    OUTPUT); digitalWrite(TOUCH_SCLK,    LOW);
+    pinMode(TOUCH_MOSI,    OUTPUT); digitalWrite(TOUCH_MOSI,    LOW);
+    pinMode(TOUCH_MISO,    INPUT);
+    pinMode(TOUCH_CS_PIN,  OUTPUT); digitalWrite(TOUCH_CS_PIN,  HIGH);
+    pinMode(TOUCH_IRQ_PIN, INPUT);
+
+    delay(10);
+    Serial.println("[touch] bit-bang init done");
+#endif
+
+    if (forceRecal) {
+        Serial.println("[touch] forced recalibration requested");
+        runCalibration();
+        return;
+    }
+
+    Preferences p;
+    p.begin("birdTch", false);   // read-write: read-only fails before first save
+    bool valid = p.getBool("valid", false);
+    p.end();
+    if (!valid) runCalibration();
+}
+
+// ---- Coordinate mapping ------------------------------------------------------
+
+static void mapTouch(int16_t rx, int16_t ry, int16_t &sx, int16_t &sy) {
+#if TOUCH_SWAP_XY
+    // Portrait: raw Y drives screen X, raw X drives screen Y.
+    sx = (int16_t)map(ry, g_xmin, g_xmax, 0, SCREEN_W - 1);
+    sy = (int16_t)map(rx, g_ymin, g_ymax, 0, SCREEN_H - 1);
+#else
+    sx = (int16_t)map(rx, g_xmin, g_xmax, 0, SCREEN_W - 1);
+    sy = (int16_t)map(ry, g_ymin, g_ymax, 0, SCREEN_H - 1);
+#endif
+    sx = constrain(sx, 0, SCREEN_W - 1);
+    sy = constrain(sy, 0, SCREEN_H - 1);
+}
+
+// ---- Gesture detection -------------------------------------------------------
+
+static bool     g_pressed      = false;
+static int16_t  g_start_x, g_start_y;
+static int16_t  g_last_x,  g_last_y;
+static uint32_t g_press_ms     = 0;
+static int32_t  g_total_dy;
+static uint32_t g_hold_next_ms = 0;   // time of next HOLD repeat; 0 = not started
+static bool     g_hold_fired   = false;
+#define TOUCH_DEBOUNCE_MS  60
+#define HOLD_INITIAL_MS   500   // delay before first repeat
+#define HOLD_REPEAT_MS    100   // interval between repeats
+
+TouchEvent touchProcess() {
+    TouchEvent evt = { TouchEvent::NONE, 0, 0, 0 };
+
+    bool pressed = tp_touched();
+
+    if (pressed && !g_pressed) {
+        if (g_press_ms != 0 && millis() - g_press_ms < TOUCH_DEBOUNCE_MS) return evt;
+
+        int16_t rx, ry, sx, sy;
+        tp_get_raw(rx, ry);
+        mapTouch(rx, ry, sx, sy);
+
+        g_start_x = g_last_x = sx;
+        g_start_y = g_last_y = sy;
+        g_press_ms     = millis();
+        g_hold_next_ms = 0;
+        g_hold_fired   = false;
+        g_total_dy     = 0;
+        g_pressed      = true;
+        Serial.printf("[touch] press (raw %d,%d) -> screen (%d,%d)\n", rx, ry, sx, sy);
+
+    } else if (pressed && g_pressed) {
+        int16_t rx, ry, sx, sy;
+        tp_get_raw(rx, ry);
+        mapTouch(rx, ry, sx, sy);
+        g_total_dy += sy - g_last_y;
+        g_last_x = sx;
+        g_last_y = sy;
+
+        // Emit HOLD repeat events while finger is stationary
+        uint32_t now = millis();
+        if (abs(g_total_dy) < 15) {   // not a swipe
+            if (g_hold_next_ms == 0 && now - g_press_ms >= HOLD_INITIAL_MS) {
+                g_hold_next_ms = now + HOLD_REPEAT_MS;
+                g_hold_fired   = true;
+                evt.type = TouchEvent::HOLD;
+                evt.x    = g_start_x;
+                evt.y    = g_start_y;
+            } else if (g_hold_next_ms != 0 && now >= g_hold_next_ms) {
+                g_hold_next_ms = now + HOLD_REPEAT_MS;
+                evt.type = TouchEvent::HOLD;
+                evt.x    = g_start_x;
+                evt.y    = g_start_y;
+            }
+        }
+
+    } else if (!pressed && g_pressed) {
+        g_pressed = false;
+        uint32_t dur = millis() - g_press_ms;
+        int16_t dx   = g_last_x - g_start_x;
+        int16_t dy   = g_last_y - g_start_y;
+        int16_t dist = (int16_t)sqrtf((float)(dx*dx + dy*dy));
+
+        Serial.printf("[touch] release start=(%d,%d) end=(%d,%d) dist=%d dur=%ums tdy=%d\n",
+                      g_start_x, g_start_y, g_last_x, g_last_y, dist, dur, (int)g_total_dy);
+
+        // Suppress TAP on release if a HOLD was already fired
+        if (g_hold_fired) {
+            Serial.printf("[touch] hold-release, suppressing TAP\n");
+        } else if (abs(g_total_dy) >= 25) {
+            evt.type = (g_total_dy < 0) ? TouchEvent::SWIPE_UP : TouchEvent::SWIPE_DOWN;
+            evt.dy   = (int16_t)g_total_dy;
+            Serial.printf("[touch] SWIPE dy=%d\n", evt.dy);
+        } else if (dist < 40 && dur < 500) {
+            evt.type = TouchEvent::TAP;
+            evt.x    = g_start_x;
+            evt.y    = g_start_y;
+            Serial.printf("[touch] TAP (%d,%d)\n", evt.x, evt.y);
+        } else {
+            Serial.printf("[touch] no event (dist=%d dur=%ums tdy=%d)\n", dist, dur, (int)g_total_dy);
+        }
+    }
+    return evt;
+}

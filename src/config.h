@@ -28,6 +28,12 @@
 #define HERO_IMG_H    240                // 240x240 centre-cropped photo
 #define HERO_HOLD_MS  3000UL             // how long the photo stays up
 
+// ---- Header "setup" button (list screen) ----------------------------------
+#define BTN_W         46
+#define BTN_H         16
+#define BTN_X         (SCREEN_W - BTN_W - 2)   // right-aligned in the header
+#define BTN_Y         2
+
 // ---- Image cache (internal LittleFS) --------------------------------------
 #define CACHE_DIR       "/birds"
 #define CACHE_MAX_BYTES (700UL * 1024UL)  // leave headroom in the 896 KB partition
