@@ -177,6 +177,16 @@ To start over from scratch, erase the flash first:
 esptool --chip esp32 --port /dev/ttyUSB0 erase-flash
 ```
 
+## Enclosure
+
+A 3D-printed case for the CYD screws on and mounts flush to a [Skadis
+board](https://www.skadis.com/). The finished device sits flat against the board
+on its four corner posts:
+
+| The finished device, mounted flat on its corner posts | Back of the enclosure — a printed plate carrying four mounting screws |
+|:---:|:---:|
+| ![Yard Birds CYD mounted to a Skadis board](images/on-skadis-board.jpg) | ![Back view of the 3D-printed enclosure with four screws on standoffs](images/enclosure-back.jpg) |
+
 ## How it works
 
 **Data sources** (all from BirdNET-Go's HTTP API):
