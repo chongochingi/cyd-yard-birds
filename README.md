@@ -179,9 +179,9 @@ esptool --chip esp32 --port /dev/ttyUSB0 erase-flash
 
 ## Enclosure
 
-A 3D-printed case for the CYD screws on and mounts flush to a [Skadis
-board](https://www.skadis.com/). The finished device sits flat against the board
-on its four corner posts:
+The CYD lives in a slim, minimal [3D-printed case](https://makerworld.com/en/models/2171220-slim-minimal-case-for-esp32-cyd-2-4-2-8?from=search#profileId-2354976),
+mounted on a Skadis board. The finished device sits flat on its four corner
+posts:
 
 | The finished device, mounted flat on its corner posts | Back of the enclosure — a printed plate carrying four mounting screws |
 |:---:|:---:|
