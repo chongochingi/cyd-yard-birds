@@ -45,7 +45,10 @@
                                              // this long before falling back to setup
 #define LIST_REFRESH_MS        (5UL * 60UL * 1000UL)   // re-pull counts every 5 min
 #define RECONNECT_DELAY_MS     5000UL
-#define STREAM_POLL_MS         10000UL       // SSE wait per loop
+// SSE read budget per loop. Kept short so the loop returns often enough to poll
+// the touch panel — a long wait here makes the SETUP button feel dead, because
+// taps land while the loop is parked inside the socket read.
+#define STREAM_POLL_MS         250UL
 #define HERO_DEDUPE_MS         45000UL       // ignore repeat IDs of the same bird
 
 // ---- Colours (RGB565) -----------------------------------------------------

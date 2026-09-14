@@ -93,6 +93,32 @@ rather than throwing a setup screen at an already-configured device. It only
 offers setup after the grace period, which is also the recovery path if you
 mistype the address.
 
+### Reopening setup later
+
+Tap the **SETUP** button in the top-right of the list screen. The portal opens
+again with your current values pre-filled, so you can change the server address,
+switch WiFi networks, or add credentials without erasing anything.
+
+### Touch calibration
+
+Touch drives only the SETUP button. On first boot the display runs a two-point
+calibration — tap each red crosshair firmly — and stores it in NVS. Later boots
+skip it.
+
+**If you mis-tap during calibration**, the panel becomes unreliable and you
+cannot tap your way out of it. Send `c` over the serial console within 2 seconds
+of powering on to force a redo:
+
+```bash
+pio device monitor          # then press 'c' as it boots, or:
+python3 -c "import serial,time; s=serial.Serial('/dev/ttyUSB0',115200); \
+  s.setDTR(False); s.setRTS(True); time.sleep(0.2); s.setRTS(False); \
+  [ (s.write(b'c'), time.sleep(0.05)) for _ in range(50) ]"
+```
+
+Clearing calibration does not touch your WiFi or server settings — they live in
+separate NVS namespaces.
+
 To start over from scratch, erase the flash first:
 
 ```bash

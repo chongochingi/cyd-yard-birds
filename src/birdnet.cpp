@@ -12,6 +12,11 @@ namespace BirdNet {
 static WiFiClient s_stream;
 static bool       s_streamUp = false;
 
+// Bytes of an SSE line not yet terminated by '\n'. Persisted across calls so the
+// reader can return promptly — letting the main loop poll the touch panel —
+// without losing a partially received line.
+static String     s_lineAccum;
+
 // Server address lives in NVS so a downloaded build can be pointed at any
 // BirdNET-Go instance from the setup portal — no recompile.
 static String   s_host = BIRDNET_DEFAULT_HOST;
@@ -274,6 +279,7 @@ bool streamConnected() { return s_streamUp && s_stream.connected(); }
 void streamClose() {
   s_stream.stop();
   s_streamUp = false;
+  s_lineAccum = "";     // drop any half-read line from the dead connection
 }
 
 bool streamOpen() {
@@ -303,17 +309,22 @@ bool streamOpen() {
 }
 
 static bool readLine(String &out, unsigned long deadline) {
-  out = "";
   while (millis() < deadline) {
     if (!s_stream.connected() && !s_stream.available()) return false;
     while (s_stream.available()) {
       char c = (char)s_stream.read();
-      if (c == '\n') { out.trim(); return true; }
-      out += c;
-      if (out.length() > 4096) out = "";
+      if (c == '\n') {
+        out = s_lineAccum;
+        out.trim();
+        s_lineAccum = "";
+        return true;
+      }
+      s_lineAccum += c;
+      if (s_lineAccum.length() > 4096) s_lineAccum = "";
     }
     delay(2);
   }
+  // Timed out mid-line: keep s_lineAccum so the next call resumes cleanly.
   return false;
 }
 
