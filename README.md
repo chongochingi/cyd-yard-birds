@@ -1,12 +1,15 @@
-# Yard Birds — live BirdNET-Go display for the Cheap Yellow Display
+# Yard Birds — live BirdNET-Go display for the 2.8" Cheap Yellow Display
 
 A dedicated desk display for [BirdNET-Go](https://github.com/tphakala/birdnet-go).
 It shows a live list of the birds your microphone has identified today, and when a
 **new** species is identified it fills the screen with that bird's photo for three
 seconds before returning to the list.
 
-Built for the **ESP32-2432S028** ("Cheap Yellow Display") — a ~$15 2.8" 320×240
-ILI9341 touchscreen with an ESP32 attached.
+**Built for the 2.8" CYD only** — the **ESP32-2432S028** ("Cheap Yellow Display"),
+a ~$15 board with a 320×240 ILI9341 touchscreen and an ESP32 already attached.
+That is the single supported target. This is not a general-purpose ESP32 or
+display project: the pin assignments, panel driver, and touch wiring below are all
+specific to this board, and the layout is tuned to a 240×320 portrait screen.
 
 ```
 ┌────────────────────────┐
@@ -31,10 +34,11 @@ ILI9341 touchscreen with an ESP32 attached.
 
 ## Requirements
 
-- **BirdNET-Go** running and reachable on your LAN. It must be listening on a
-  port your WiFi network can reach (default `8085`).
-- An **ESP32-2432S028** board and a USB data cable (plenty of USB cables are
-  charge-only — if the board doesn't appear, try another cable first).
+- **An ESP32-2432S028 "Cheap Yellow Display"** — the 2.8" board specifically.
+- A **USB data cable**. Plenty of USB cables are charge-only; if the board never
+  appears as a serial port, try another cable before debugging anything else.
+- **BirdNET-Go** running and reachable on your LAN, listening on a port your WiFi
+  network can reach (default `8085`).
 - No SD card is needed.
 
 ## Building and flashing
@@ -148,11 +152,11 @@ downloaded once and then renders instantly, including while offline.
 
 ## Hardware notes
 
-Two traps that cost real debugging time, in case you fork this:
+Three traps that cost real debugging time. All are specific to the 2.8" CYD.
 
-**Backlight.** `TFT_eSPI` does not drive the backlight unless told to. The pin is
+**Backlight.** `TFT_eSPI` does not drive the backlight unless told to. It is on
 GPIO 21 and the firmware sets it explicitly — otherwise the board runs perfectly
-into a dark screen.
+into a dark screen, which reads as dead hardware.
 
 **JPEG output format.** The vendored `TJpg_Decoder` is configured with
 `JD_FORMAT 0`, which in TJpgDec R0.03 means **RGB888 (3 bytes per pixel)**, not
@@ -160,10 +164,11 @@ the RGB565 you might expect. The decode callback converts to RGB565 and
 byte-swaps by hand. Feeding the buffer straight to `pushImage` produces garbled
 photos with correct-looking text.
 
-Touch is not used by this project. Note that the XPT2046 sits on
-**different pins** to the display (25/39/32/33/36 vs 13/12/14/15), so if you add
-touch you must bit-bang it — the ESP32's two user SPI peripherals are already
-used by the TFT and SD.
+**Touch is not on the display's SPI bus.** The XPT2046 sits on different pins to
+the ILI9341 (25/39/32/33/36 vs 13/12/14/15), so it has to be bit-banged — the
+ESP32's two user SPI peripherals are already taken by the TFT and SD. Because the
+panel runs portrait here while the touch driver assumes landscape, the raw axes
+are rotated; `TOUCH_SWAP_XY` in `src/touch.cpp` states that mapping explicitly.
 
 ## Configuration
 
@@ -186,6 +191,10 @@ header at all.
 
 ## Credits and licensing
 
+This project is MIT licensed — see [LICENSE](LICENSE).
+
+Bundled and depended-upon libraries:
+
 - **TJpg_Decoder** by [Bodmer](https://github.com/Bodmer/TJpg_Decoder), wrapping
   **TJpgDec** by ChaN (R0.03, "free software ... education, research and
   commercial developments", no warranty). Vendored in `lib/` because the
@@ -193,5 +202,3 @@ header at all.
 - **TFT_eSPI** by Bodmer — pulled via PlatformIO.
 - **WiFiManager** by tzapu — MIT.
 - **ArduinoJson** by Benoît Blanchon — MIT.
-
-Add your own `LICENSE` file before publishing.
