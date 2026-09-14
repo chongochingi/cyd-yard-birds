@@ -11,26 +11,10 @@ That is the single supported target. This is not a general-purpose ESP32 or
 display project: the pin assignments, panel driver, and touch wiring below are all
 specific to this board, and the layout is tuned to a 240×320 portrait screen.
 
-```
-┌────────────────────────┐
-│ Yard Birds         live│
-│ species     today   id │
-│ Blue Jay      379   93%│
-│ Northern Card…221   95%│
-│ Cedar Waxwing 148   91%│
-│ American Crow  19   92%│
-│ …                      │
-└────────────────────────┘
-        ↓ new identification
-┌────────────────────────┐
-│                        │
-│    [ full-screen       │
-│      bird photo ]      │
-│                        │
-│      Blue Jay          │
-│   379 today - 93% id   │
-└────────────────────────┘
-```
+| The list | A new identification |
+|:---:|:---:|
+| ![Yard Birds list screen — species, today's count, id confidence](images/bird-list.jpg) | ![Full-screen bird photo with caption](images/hero-carolina-chickadee.jpg) |
+| Species, how many times it's been heard today, and the identification confidence. Tap **SETUP** to reconfigure. | When a **new** species is identified, the photo fills the screen for three seconds, then returns to the list. |
 
 ## Quick start
 
