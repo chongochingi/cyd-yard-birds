@@ -150,25 +150,6 @@ a bird calling repeatedly doesn't strobe the screen.
 partition (~896 KB = roughly 110 photos at ~8 KB each). Each species is
 downloaded once and then renders instantly, including while offline.
 
-## Hardware notes
-
-Three traps that cost real debugging time. All are specific to the 2.8" CYD.
-
-**Backlight.** `TFT_eSPI` does not drive the backlight unless told to. It is on
-GPIO 21 and the firmware sets it explicitly — otherwise the board runs perfectly
-into a dark screen, which reads as dead hardware.
-
-**JPEG output format.** The vendored `TJpg_Decoder` is configured with
-`JD_FORMAT 0`, which in TJpgDec R0.03 means **RGB888 (3 bytes per pixel)**, not
-the RGB565 you might expect. The decode callback converts to RGB565 and
-byte-swaps by hand. Feeding the buffer straight to `pushImage` produces garbled
-photos with correct-looking text.
-
-**Touch is not on the display's SPI bus.** The XPT2046 sits on different pins to
-the ILI9341 (25/39/32/33/36 vs 13/12/14/15), so it has to be bit-banged — the
-ESP32's two user SPI peripherals are already taken by the TFT and SD. Because the
-panel runs portrait here while the touch driver assumes landscape, the raw axes
-are rotated; `TOUCH_SWAP_XY` in `src/touch.cpp` states that mapping explicitly.
 
 ## Configuration
 
